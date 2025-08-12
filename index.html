@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Ice Maze — Mini Juego HTML5</title>
+<style>
+  :root{
+    --bg:#e9f5ff;           /* nieve */
+    --ink:#0f172a;          /* texto */
+    --ice:#8bd2ff;          /* bloques de hielo */
+    --ice-dark:#56b7ef;
+    --fruit:#ff9a1e;        /* frutas */
+    --leaf:#2fbf5f;
+    --hud:#ffffffcc;
+    --accent:#0b5bd3;
+  }
+  html,body{height:100%}
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:linear-gradient(180deg,#5b2eb3 0,#200545 100%);
+    display:grid;place-items:center;color:var(--ink);
+    font-family: system-ui,-apple-system,Segoe UI,Inter,Roboto,Arial,sans-serif;
+    touch-action: manipulation;
+  }
+  .frame{width:min(100vw, 780px); height:min(100vh, 1100px); aspect-ratio: 3/4; background:#c6e8ff; border-radius:22px; box-shadow:0 30px 80px rgba(0,0,0,.35); position:relative; overflow:hidden}
+  header.hud{position:absolute; inset:0 auto auto 0; width:100%; padding:10px 14px; display:flex; gap:12px; align-items:center; justify-content:space-between; z-index:4}
+  header.hud .pill{background:var(--hud); backdrop-filter: blur(6px); border:2px solid #000; border-radius:999px; padding:6px 12px; font-weight:700; text-shadow:0 1px 0 #fff}
+  header.hud .left, header.hud .right{display:flex; gap:8px; align-items:center}
+  #game{display:block; width:100%; height:100%; image-rendering: pixelated; background:var(--bg)}
+
+  /* Controles táctiles */
+  .controls{position:absolute; inset:auto 0 10px 0; display:flex; justify-content:space-between; align-items:end; padding:0 10px; pointer-events:none}
+  .dpad{pointer-events:auto; display:grid; grid-template-columns:repeat(3,64px); grid-template-rows:repeat(3,64px); gap:8px; opacity:.98}
+  .btn{width:64px; height:64px; border-radius:16px; border:2px solid #000; background:#fff; box-shadow:0 8px 0 #000; display:grid; place-items:center; font-weight:900; user-select:none}
+  .btn:active{transform:translateY(4px); box-shadow:0 4px 0 #000}
+  .btn svg{width:28px; height:28px}
+  .btn.invisible{opacity:0; pointer-events:none}
+  .actions{pointer-events:auto; display:flex; gap:14px; align-items:center}
+  .a{width:76px;height:76px;border-radius:50%; background:#fff; border:2px solid #000; box-shadow:0 10px 0 #000; font-weight:900; display:grid; place-items:center}
+  .a:active{transform:translateY(4px); box-shadow:0 6px 0 #000}
+
+  /* Indicadores */
+  .banner{position:absolute; left:50%; top:16%; transform:translateX(-50%); background:var(--hud); border:2px solid #000; padding:10px 16px; border-radius:16px; font-weight:900; letter-spacing:.06em; z-index:5}
+  .hidden{display:none}
+
+  /* Ayuda desktop */
+  .hint{position:absolute; bottom:90px; left:50%; transform:translateX(-50%); background:#ffffffb8; border:2px solid #000; border-radius:12px; padding:6px 10px; font-size:12px}
+  @media (min-width: 860px){ .hint{bottom:18px} }
+</style>
+</head>
+<body>
+  <div class="frame" id="frame">
+    <header class="hud">
+      <div class="left">
+        <span class="pill" id="sc">PUNTOS: 0</span>
+        <span class="pill" id="lv">NIVEL 1</span>
+      </div>
+      <div class="right">
+        <button class="pill" id="btnPause" title="Pausar/Reanudar">⏸️ Pausa</button>
+        <span class="pill" id="tm">02:00</span>
+      </div>
+    </header>
+    <div class="banner" id="banner">NIVEL 1</div>
+    <canvas id="game" width="600" height="800" aria-label="Juego Ice Maze"></canvas>
+
+    <!-- Controles táctiles -->
+    <div class="controls">
+      <div class="dpad" id="dpad">
+        <div class="btn invisible"></div>
+        <button class="btn" data-dir="up" aria-label="Arriba">⬆️</button>
+        <div class="btn invisible"></div>
+        <button class="btn" data-dir="left" aria-label="Izquierda">⬅️</button>
+        <div class="btn invisible"></div>
+        <button class="btn" data-dir="right" aria-label="Derecha">➡️</button>
+        <div class="btn invisible"></div>
+        <button class="btn" data-dir="down" aria-label="Abajo">⬇️</button>
+        <div class="btn invisible"></div>
+      </div>
+      <div class="actions">
+        <button class="a" id="btnRestart" title="Reiniciar">↻</button>
+      </div>
+    </div>
+
+    <div class="hint">PC: flechas / WSAD · Móvil: pad táctil</div>
+  </div>
+
+<script>
+(()=>{
+  /* =========================
+     CONFIGURACIÓN GENERAL
+  ========================= */
+  const cnv = document.getElementById('game');
+  const ctx = cnv.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const HUD = {
+    score: document.getElementById('sc'),
+    level: document.getElementById('lv'),
+    time:  document.getElementById('tm'),
+    banner:document.getElementById('banner')
+  };
+  const btnPause = document.getElementById('btnPause');
+  const btnRestart = document.getElementById('btnRestart');
+  const frame = document.getElementById('frame');
+
+  // Mapa (0: vacío, 1: pared, 2: fruta)
+  // 15 filas x 11 columnas -> centrado
+  const MAP_ROWS = 17, MAP_COLS = 13;
+  let TILE = 40; // ajustado dinámicamente
+
+  // Layout base con perímetro + laberinto sencillo inspirado en la captura
+  const baseMap = [
+    '1111111111111',
+    '1000002000001',
+    '1022211122221',
+    '1000002000001',
+    '1220111101221',
+    '1000200000001',
+    '1110112201111',
+    '1000100001001',
+    '1022103331221', // 3 = iglú (bloque grande en centro)
+    '1000100001001',
+    '1110112201111',
+    '1000200000001',
+    '1220111101221',
+    '1000002000001',
+    '1022211122221',
+    '1000002000001',
+    '1111111111111',
+  ].map(r=>r.split('').map(n=>+n));
+
+  // Estado del juego
+  const stateDefault = () => ({
+    map: baseMap.map(r=>r.slice()),
+    fruits: 0,
+    score: 0,
+    timeLeft: 120, // segundos
+    running: true,
+    level: 1,
+    message: 'NIVEL 1'
+  });
+  let G = stateDefault();
+
+  // Contar frutas iniciales (valor 2)
+  for(let r=0;r<G.map.length;r++){
+    for(let c=0;c<G.map[0].length;c++){
+      if(G.map[r][c]===2) G.fruits++;
+    }
+  }
+
+  // Entidades
+  const player = {r: 13, c: 6, x:0, y:0, dir:'none', speed: 5, radius:0.35};
+  const enemies = [
+    {r: 8, c: 11, x:0, y:0, dir:'left', speed: 4, radius:0.38},
+    {r: 2, c: 1,  x:0, y:0, dir:'right', speed: 3.6, radius:0.38}
+  ];
+
+  // Redimensionar canvas según contenedor
+  function resize(){
+    const w = frame.clientWidth;
+    const h = frame.clientHeight;
+    // Elegimos el tamaño de tile que mejor llene el área manteniendo el mapa visible
+    TILE = Math.floor(Math.min(w / MAP_COLS, h / MAP_ROWS));
+    const cw = TILE * MAP_COLS;
+    const ch = TILE * MAP_ROWS;
+    // Ajuste para pixel ratio
+    const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+    cnv.style.width = cw+"px"; cnv.style.height = ch+"px";
+    cnv.width = cw * dpr; cnv.height = ch * dpr;
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  addEventListener('resize', resize, {passive:true});
+  resize();
+
+  // Utilidades
+  const isWall = (r,c)=> (G.map[r]?.[c]===1 || G.map[r]?.[c]===3);
+  const isBlocked = (r,c)=> isWall(r,c);
+  const isFruit = (r,c)=> G.map[r]?.[c]===2;
+
+  const dirs = { up:[-1,0], down:[1,0], left:[0,-1], right:[0,1] };
+
+  function tileCenter(r,c){ return {x:c*TILE + TILE/2, y:r*TILE + TILE/2}; }
+
+  function resetPositions(){
+    Object.assign(player, {r:13,c:6,dir:'none'});
+    enemies[0].r=8; enemies[0].c=11; enemies[0].dir='left';
+    enemies[1].r=2; enemies[1].c=1; enemies[1].dir='right';
+  }
+  resetPositions();
+
+  // Dibujo del escenario
+  function draw(){
+    // Fondo nieve
+    ctx.fillStyle = '#e6f5ff';
+    ctx.fillRect(0,0,cnv.width,cnv.height);
+
+    // Suelo con nubes suaves
+    for(let i=0;i<40;i++){
+      const x = (i*97)% (MAP_COLS*TILE);
+      const y = (i*61)% (MAP_ROWS*TILE);
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.beginPath(); ctx.arc(x,y, 24, 0, Math.PI*2); ctx.fill();
+    }
+
+    // Mapa
+    for(let r=0;r<MAP_ROWS;r++){
+      for(let c=0;c<MAP_COLS;c++){
+        const v = G.map[r][c];
+        const x=c*TILE, y=r*TILE;
+        if(v===1){ // hielo
+          ctx.fillStyle = '#b5e7ff';
+          ctx.fillRect(x,y,TILE,TILE);
+          ctx.strokeStyle = '#56b7ef';
+          ctx.lineWidth = 3; ctx.strokeRect(x+1.5,y+1.5,TILE-3,TILE-3);
+          ctx.beginPath(); ctx.moveTo(x+6,y+6); ctx.lineTo(x+TILE-6,y+TILE-6); ctx.stroke();
+        }
+        if(v===3){ // iglú central como bloque
+          const cx = x+TILE/2, cy=y+TILE/2;
+          ctx.fillStyle = '#d1f1ff';
+          ctx.beginPath(); ctx.arc(cx,cy,TILE*0.48,0,Math.PI*2); ctx.fill();
+          ctx.strokeStyle = '#56b7ef'; ctx.lineWidth = 3; ctx.stroke();
+          ctx.fillStyle = '#5fb4e9';
+          ctx.fillRect(cx-8, cy-12, 16, 18);
+        }
+        if(v===2){ // fruta
+          drawFruit(x+TILE/2,y+TILE/2, TILE*0.26);
+        }
+      }
+    }
+
+    // Jugador
+    drawPlayer();
+
+    // Enemigos
+    enemies.forEach(e=> drawEnemy(e));
+
+    // HUD overlay (opcional ya está arriba)
+  }
+
+  function drawFruit(cx,cy,r){
+    ctx.save();
+    ctx.translate(cx,cy);
+    // cuerpo
+    ctx.fillStyle = getCss('--fruit');
+    ctx.beginPath(); ctx.arc(0,0,r,0,Math.PI*2); ctx.fill();
+    // brillo
+    ctx.fillStyle = 'rgba(255,255,255,.8)';
+    ctx.beginPath(); ctx.arc(-r*0.3,-r*0.2,r*0.4,0,Math.PI*2); ctx.fill();
+    // hoja
+    ctx.fillStyle = getCss('--leaf');
+    ctx.beginPath(); ctx.moveTo(r*0.1,-r*0.9); ctx.quadraticCurveTo(r*1.0,-r*0.9, r*0.6,-r*0.1); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawPlayer(){
+    const {x,y} = tileCenter(player.r, player.c);
+    ctx.save(); ctx.translate(x,y);
+    // base (cono de helado estilo gorrito)
+    const R = TILE*0.34;
+    ctx.fillStyle = '#fff7d6';
+    ctx.beginPath(); ctx.moveTo(-R*0.4,R*0.9); ctx.lineTo(R*0.4,R*0.9); ctx.lineTo(0,-R); ctx.closePath(); ctx.fill();
+    // borde
+    ctx.strokeStyle = '#000'; ctx.lineWidth=2; ctx.stroke();
+    // cara
+    ctx.fillStyle = '#f6c2b0'; ctx.fillRect(-R*0.25, -R*0.05, R*0.5, R*0.38);
+    ctx.fillStyle = '#000'; ctx.fillRect(-R*0.15, R*0.05, 6,6); ctx.fillRect(R*0.09, R*0.05, 6,6);
+    ctx.restore();
+  }
+
+  function drawEnemy(e){
+    const {x,y} = tileCenter(e.r, e.c);
+    ctx.save(); ctx.translate(x,y);
+    const R = TILE*0.36;
+    ctx.fillStyle = '#55c46b';
+    ctx.beginPath(); ctx.arc(0,0,R,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#094'; ctx.lineWidth=2; ctx.stroke();
+    // cuernos
+    ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(-R*0.6,-R*0.6,R*0.3,Math.PI*.3,Math.PI*1.4); ctx.fill();
+    ctx.beginPath(); ctx.arc(R*0.6,-R*0.6,R*0.3,-Math.PI*.4,Math.PI*.7); ctx.fill();
+    // ojos
+    ctx.fillStyle = '#000'; ctx.fillRect(-6,-2,4,4); ctx.fillRect(2,-2,4,4);
+    ctx.restore();
+  }
+
+  function getCss(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+  /* =========================
+     LÓGICA DE MOVIMIENTO
+  ========================= */
+  function canMove(r,c,dir){
+    const [dr,dc] = dirs[dir] || [0,0];
+    const nr = r + dr, nc = c + dc;
+    return !isBlocked(nr,nc);
+  }
+
+  function stepEntity(ent){
+    if(ent.dir==='none') return;
+    if(canMove(ent.r, ent.c, ent.dir)){
+      const [dr,dc] = dirs[ent.dir];
+      // Movimiento a velocidad por frame acumulando delta por tile
+      ent._px = (ent._px||0) + ent.speed;
+      if(ent._px >= TILE){
+        ent._px = 0; ent.r += dr; ent.c += dc;
+      }
+    } else {
+      ent._px = 0;
+    }
+  }
+
+  function chooseEnemyDir(e){
+    const opts = ['up','down','left','right'].filter(d=>canMove(e.r,e.c,d));
+    if(opts.length===0){ e.dir='none'; return;}
+    // preferir continuar recto si se puede para que no tiemble
+    if(canMove(e.r,e.c,e.dir) && Math.random()<0.7) return;
+    e.dir = opts[(opts.length*Math.random())|0];
+  }
+
+  /* =========================
+     BUCLE DE JUEGO
+  ========================= */
+  let last=0, acc=0; // para timer de 60fps y 1s
+  function loop(ts){
+    if(!G.running){ requestAnimationFrame(loop); return; }
+    if(!last) last=ts; const dt = Math.min(33, ts-last); last=ts; acc+=dt;
+
+    // actualizar cada frame ~60fps
+    stepEntity(player);
+    enemies.forEach(e=>{ if(Math.random()<0.05) chooseEnemyDir(e); stepEntity(e); });
+
+    // Colisiones con frutas
+    if(isFruit(player.r, player.c)){
+      G.map[player.r][player.c]=0; G.score+=10; G.fruits--; HUD.score.textContent = `PUNTOS: ${G.score}`;
+      // ¿ganó?
+      if(G.fruits<=0){
+        showBanner('¡NIVEL COMPLETADO!');
+        G.running=false;
+      }
+    }
+
+    // Colisión enemigo
+    enemies.forEach(e=>{
+      if(Math.abs(e.r-player.r)+Math.abs(e.c-player.c)<=0){ // mismo tile
+        showBanner('¡TE ATRAPARON!');
+        G.running=false;
+      }
+    });
+
+    // Temporizador cada 1000ms
+    if(acc>=1000){
+      acc-=1000; if(G.timeLeft>0) G.timeLeft--; updateTime(); if(G.timeLeft===0){ showBanner('¡TIEMPO AGOTADO!'); G.running=false; }
+    }
+
+    draw();
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  function updateTime(){
+    const m = String(Math.floor(G.timeLeft/60)).padStart(1,'0');
+    const s = String(G.timeLeft%60).padStart(2,'0');
+    HUD.time.textContent = `${m}:${s}`;
+  }
+  updateTime();
+
+  function showBanner(text){ HUD.banner.textContent=text; HUD.banner.classList.remove('hidden'); setTimeout(()=>HUD.banner.classList.add('hidden'), 2000); }
+
+  function restart(full=false){
+    if(full){ G = stateDefault(); }
+    else {
+      G.timeLeft = 120; G.running = true; G.message = 'NIVEL 1'; G.score = 0; G.map = baseMap.map(r=>r.slice()); G.fruits=0; for(let r=0;r<G.map.length;r++)for(let c=0;c<G.map[0].length;c++)if(G.map[r][c]===2)G.fruits++; HUD.score.textContent='PUNTOS: 0';
+    }
+    updateTime(); showBanner(G.message); resetPositions(); last=0; acc=0; requestAnimationFrame(loop);
+  }
+
+  /* =========================
+     ENTRADAS (TECLADO + TÁCTIL)
+  ========================= */
+  const keyToDir = { ArrowUp:'up', ArrowDown:'down', ArrowLeft:'left', ArrowRight:'right', KeyW:'up', KeyS:'down', KeyA:'left', KeyD:'right' };
+  addEventListener('keydown', e=>{ const d = keyToDir[e.code]; if(d){ e.preventDefault(); player.dir = d; }});
+
+  // Pad táctil
+  const dpad = document.getElementById('dpad');
+  dpad.addEventListener('touchstart', onPad, {passive:false});
+  dpad.addEventListener('touchmove', onPad, {passive:false});
+  dpad.addEventListener('touchend',  ()=>{ player.dir='none'; });
+  dpad.addEventListener('touchcancel',()=>{ player.dir='none'; });
+  dpad.querySelectorAll('.btn').forEach(b=> b.addEventListener('mousedown', ()=> player.dir=b.dataset.dir));
+  addEventListener('mouseup', ()=>{ player.dir='none'; });
+
+  function onPad(ev){
+    ev.preventDefault();
+    const t = ev.target.closest('.btn');
+    if(!t || !t.dataset.dir) return; player.dir = t.dataset.dir;
+  }
+
+  // Botones
+  btnPause.addEventListener('click', ()=>{ G.running = !G.running; btnPause.textContent = G.running ? '⏸️ Pausa' : '▶️ Reanudar'; if(G.running) requestAnimationFrame(loop); });
+  btnRestart.addEventListener('click', ()=> restart());
+
+})();
+</script>
+</body>
+</html>
